@@ -7,9 +7,41 @@ namespace greezez
 	namespace mpsc
 	{
 
+		class Produser
+		{
+		public:
+			Produser()
+			{
+			}
+
+			~Produser()
+			{
+			}
+
+		private:
+
+		};
+
+
+
+		class Consumer
+		{
+		public:
+			Consumer()
+			{
+			}
+
+			~Consumer()
+			{
+			}
+
+		private:
+
+		};
+
 
 
 	}
 }
 
-#endif // !THREAD_IO_GREEZEZ_HPP
+#endif // !GREEZEZ_MPSCQUEUE_HPP
