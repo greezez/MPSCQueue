@@ -10,7 +10,7 @@
 
 #include <atomic>
 
-namespace greezez_mpscqueue
+namespace greezez_mpsc
 {
 
 	namespace details
@@ -45,19 +45,19 @@ namespace greezez_mpscqueue
 			}
 
 
-			T& front() noexcept 
+			T& front() noexcept
 			{
 				return head_->item;
 			}
-			
-			
-			T& current() noexcept 
+
+
+			T& current() noexcept
 			{
 				return current_->item;
 			}
 
 
-			void updateCurrent() noexcept 
+			void updateCurrent() noexcept
 			{
 				if (current_->next != nullptr)
 				{
@@ -69,14 +69,14 @@ namespace greezez_mpscqueue
 			}
 
 
-			void resetCurrent() noexcept 
+			void resetCurrent() noexcept
 			{
 				current_ = head_;
 			}
 
 
 			template<typename ... ARGS>
-			bool emplaceFront(ARGS&& ... args) noexcept 
+			bool emplaceFront(ARGS&& ... args) noexcept
 			{
 				Node* node = new(std::nothrow) Node(std::forward<ARGS>(args) ...);
 
@@ -93,15 +93,15 @@ namespace greezez_mpscqueue
 
 				return true;
 			}
-			
+
 
 			template<typename ... ARGS>
-			T* emplaceAndUpdateCurrent(ARGS&& ... args) noexcept 
+			T* emplaceAndUpdateCurrent(ARGS&& ... args) noexcept
 			{
 				if (head_ == nullptr)
 				{
 					if (emplaceFront(std::forward<ARGS>(args)...))
-						return &front();
+						return &head_;
 
 					return nullptr;
 				}
@@ -137,7 +137,7 @@ namespace greezez_mpscqueue
 
 			void clear() noexcept
 			{
-				
+
 				while (size_ != 0)
 					popFront();
 
@@ -180,66 +180,98 @@ namespace greezez_mpscqueue
 
 		};
 
-
-
-		class Data
-		{
-
-		public:
-
-			Data(size_t size, bool& success) noexcept :
-				data_(nullptr), offset_(0), size_(size)
-			{
-				data_ = std::malloc(size);
-
-				if (data_ == nullptr)
-				{
-					success = false;
-					return;
-				}
-
-				success = true;
-			}
-
-
-			~Data()
-			{
-				std::free(data_);
-			}
-
-
-			size_t size() noexcept
-			{
-				return size_;
-			}
-
-
-		private:
-
-			void* data_;
-			size_t offset_;
-			size_t size_;
-		};
-
-
-
-		struct DataHeader
-		{
-			std::atomic<DataHeader*> next;
-		};
-
-
-
-		constexpr size_t DataHeaderSize = sizeof(DataHeader);
 	}
 
+	class DataBlock
+	{
 
+	public:
+
+		DataBlock(size_t size, bool& success) noexcept :
+			numOfAcquired_(0), data_(nullptr), offset_(0), size_(size)
+		{
+			data_ = std::malloc(size);
+
+			if (data_ == nullptr)
+			{
+				success = false;
+				return;
+			}
+
+			success = true;
+		}
+
+
+		~DataBlock()
+		{
+			std::free(data_);
+		}
+
+
+		void* acquire(size_t size) noexcept
+		{
+			if (size > (size_ - offset_))
+				return nullptr;
+
+			void* prt = static_cast<void*>(static_cast<uint8_t*>(data_) + offset_);
+			offset_ += size;
+
+			numOfAcquired_.fetch_add(1, std::memory_order_release);
+
+			return prt;
+		}
+
+
+		void release() noexcept
+		{
+			numOfAcquired_.fetch_sub(1, std::memory_order_release);
+		}
+
+
+		size_t size() noexcept
+		{
+			return size_;
+		}
+
+
+	private:
+
+		std::atomic_size_t numOfAcquired_;
+		char padding[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic_size_t)]{};
+
+		void* data_;
+		size_t offset_;
+		size_t size_;
+	};
+
+	enum class DataState : uint8_t
+	{
+		Write = 0,
+		Read
+	};
+
+	struct DataHeader
+	{
+		DataState state;
+
+		DataBlock* dataBlock;
+		std::atomic<DataHeader*> next;
+	};
+
+	
+
+	template<typename T>
+	class Produser;
 
 	template<typename T>
 	class Consumer
 	{
+
+		friend class Producer;
+
 	public:
-		Consumer()
+		Consumer() noexcept :
+			head_(nullptr), tail_(nullptr), dummy_{DataState::Read, nullptr, nullptr}
 		{
 		}
 
@@ -247,7 +279,23 @@ namespace greezez_mpscqueue
 		{
 		}
 
+		void recive() noexcept
+		{}
+
 	private:
+
+		void send() noexcept 
+		{}
+
+	private:
+
+		std::atomic<DataHeader*> head_;
+		char padding1[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<DataHeader*>)]{};
+
+		std::atomic<DataHeader*> tail_;
+		char padding2[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<DataHeader*>)]{};
+
+		DataHeader dummy_;
 
 	};
 
@@ -259,8 +307,8 @@ namespace greezez_mpscqueue
 
 	public:
 
-		Produser(size_t dataBlockCount, size_t maxDataBlockCount, size_t objectCountPerDataBlock, bool& success) noexcept :
-			dataList_(), maxDataBlockCount_(maxDataBlockCount)
+		Produser(size_t dataBlockCount, size_t objectCountPerDataBlock, bool& success) noexcept :
+			dataBlockList_()
 		{
 			for (size_t i = 0; i < dataBlockCount; i++)
 			{
@@ -280,15 +328,24 @@ namespace greezez_mpscqueue
 
 		~Produser()
 		{
+			dataBlockList_.clear();
 		}
 
-		bool trySend(Consumer<T>& consumer, T& item) noexcept {}
+		template<typename ... ARGS>
+		bool trySendTo(Consumer<T>& consumer, ARGS& ... args) noexcept 
+		{}
+
+		template<typename ... ARGS>
+		bool sendTo(Consumer<T>& consumer, ARGS& ... args) noexcept
+		{}
 
 	private:
 
-		details::List<details::Data> dataBlockList_;
 
-		size_t maxDataBlockCount_;
+
+	private:
+
+		details::List<DataBlock> dataBlockList_;
 	};
 	
 
