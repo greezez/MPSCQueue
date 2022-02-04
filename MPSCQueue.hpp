@@ -6,9 +6,11 @@
 #define GREEZEZ_CACHE_LINE_SIZE 64
 #endif
 
+#define GREEZEZ_MIN_DATA_BOCK_SIZE GREEZEZ_CACHE_LINE_SIZE  
+
 #include <atomic>
 
-namespace greezez
+namespace greezez_mpscqueue
 {
 
 	namespace details
@@ -99,7 +101,7 @@ namespace greezez
 				if (head_ == nullptr)
 				{
 					if (emplaceFront(std::forward<ARGS>(args)...))
-						return front();
+						return &front();
 
 					return nullptr;
 				}
@@ -178,46 +180,123 @@ namespace greezez
 
 		};
 
+
+
+		class Data
+		{
+
+		public:
+
+			Data(size_t size, bool& success) noexcept :
+				data_(nullptr), offset_(0), size_(size)
+			{
+				data_ = std::malloc(size);
+
+				if (data_ == nullptr)
+				{
+					success = false;
+					return;
+				}
+
+				success = true;
+			}
+
+
+			~Data()
+			{
+				std::free(data_);
+			}
+
+
+			size_t size() noexcept
+			{
+				return size_;
+			}
+
+
+		private:
+
+			void* data_;
+			size_t offset_;
+			size_t size_;
+		};
+
+
+
+		struct DataHeader
+		{
+			std::atomic<DataHeader*> next;
+		};
+
+
+
+		constexpr size_t DataHeaderSize = sizeof(DataHeader);
 	}
 
 
 
-	namespace mpsc
+	template<typename T>
+	class Consumer
+	{
+	public:
+		Consumer()
+		{
+		}
+
+		~Consumer()
+		{
+		}
+
+	private:
+
+	};
+
+
+
+	template<typename T>
+	class Produser
 	{
 
-		class Produser
+	public:
+
+		Produser(size_t dataBlockCount, size_t maxDataBlockCount, size_t objectCountPerDataBlock, bool& success) noexcept :
+			dataList_(), maxDataBlockCount_(maxDataBlockCount)
 		{
-		public:
-			Produser()
+			for (size_t i = 0; i < dataBlockCount; i++)
 			{
+				bool allocSuccess = false;
+
+				if (!dataBlockList_.emplaceFront(GREEZEZ_MIN_DATA_BOCK_SIZE * objectCountPerDataBlock, allocSuccess) or !allocSuccess)
+				{
+					dataBlockList_.clear();
+					success = false;
+					return;
+				}
 			}
 
-			~Produser()
-			{
-			}
+			dataBlockList_.resetCurrent();
+			success = true;
+		}
 
-		private:
-
-			
-		};
-
-
-
-		class Consumer
+		~Produser()
 		{
-		public:
-			Consumer()
-			{
-			}
+		}
 
-			~Consumer()
-			{
-			}
+		bool trySend(Consumer<T>& consumer, T& item) noexcept {}
 
-		private:
+	private:
 
-		};
-	}
+		details::List<details::Data> dataBlockList_;
+
+		size_t maxDataBlockCount_;
+	};
+	
+
+	
+
+
+		
+	
 }
 
 #endif // !GREEZEZ_MPSCQUEUE_HPP
