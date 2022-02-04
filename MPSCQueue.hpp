@@ -43,15 +43,15 @@ namespace greezez
 			}
 
 
-			T* front() noexcept 
+			T& front() noexcept 
 			{
-				return head_;
+				return head_->item;
 			}
 			
 			
-			T* current() noexcept 
+			T& current() noexcept 
 			{
-				return current_;
+				return current_->item;
 			}
 
 
@@ -118,6 +118,7 @@ namespace greezez
 				return &node->item;
 			}
 
+
 			void popFront() noexcept
 			{
 				if (head_ == nullptr)
@@ -131,6 +132,7 @@ namespace greezez
 				delete node;
 			}
 
+
 			void clear() noexcept
 			{
 				
@@ -139,6 +141,18 @@ namespace greezez
 
 				size_ = 0;
 				current_ = nullptr;
+			}
+
+
+			size_t size() noexcept
+			{
+				return size_;
+			}
+
+
+			bool empty() noexcept
+			{
+				return size_ == 0;
 			}
 
 
