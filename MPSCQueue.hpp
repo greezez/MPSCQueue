@@ -2,15 +2,17 @@
 #ifndef GREEZEZ_MPSCQUEUE_HPP
 #define GREEZEZ_MPSCQUEUE_HPP
 
+
+#include <atomic>
+
+
 #ifndef GREEZEZ_CACHE_LINE_SIZE
 #define GREEZEZ_CACHE_LINE_SIZE 64
 #endif
 
-#define GREEZEZ_MIN_DATA_BOCK_SIZE GREEZEZ_CACHE_LINE_SIZE  
 
-#include <atomic>
 
-namespace greezez_mpsc
+namespace greezez
 {
 
 	namespace details
@@ -187,10 +189,22 @@ namespace greezez_mpsc
 
 	public:
 
-		DataBlock(size_t size, bool& success) noexcept :
-			numOfAcquired_(0), data_(nullptr), offset_(0), size_(size)
+		struct DataBlockHeader
 		{
-			data_ = std::malloc(size);
+			std::atomic_size_t numOfAcquired;
+			char padding1[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic_size_t)];
+
+			size_t offset;
+			size_t size;
+			char padding2[GREEZEZ_CACHE_LINE_SIZE - (sizeof(size_t) * 2)];
+		};
+
+		
+
+		DataBlock(size_t size, bool& success) noexcept :
+			data_(nullptr)
+		{
+			data_ = std::malloc((2 * GREEZEZ_CACHE_LINE_SIZE) + size);
 
 			if (data_ == nullptr)
 			{
@@ -198,9 +212,14 @@ namespace greezez_mpsc
 				return;
 			}
 
+			DataBlockHeader* header = static_cast<DataBlockHeader*>(data_);
+
+			header->numOfAcquired = 0;
+			header->size = size;
+			header->offset = 0;
+
 			success = true;
 		}
-
 
 		~DataBlock()
 		{
@@ -210,54 +229,44 @@ namespace greezez_mpsc
 
 		void* acquire(size_t size) noexcept
 		{
-			if (size > (size_ - offset_))
+			DataBlockHeader* header = static_cast<DataBlockHeader*>(data_);
+
+			if (size > (header->size - header->offset))
 				return nullptr;
 
-			void* prt = static_cast<void*>(static_cast<uint8_t*>(data_) + offset_);
-			offset_ += size;
+			void* ptr = static_cast<void*>(static_cast<uint8_t*>(data_) + (GREEZEZ_CACHE_LINE_SIZE * 2) + header->offset );
+			header->offset += size;
 
-			numOfAcquired_.fetch_add(1, std::memory_order_release);
+			header->numOfAcquired.fetch_add(1, std::memory_order_release);
 
-			return prt;
+			return ptr;
 		}
 
 
 		void release() noexcept
 		{
-			numOfAcquired_.fetch_sub(1, std::memory_order_release);
+			static_cast<DataBlockHeader*>(data_) -> numOfAcquired.fetch_sub(1, std::memory_order_release);
+		}
+
+
+		void reset() noexcept
+		{
+			static_cast<DataBlockHeader*>(data_) -> offset = 0;
 		}
 
 
 		size_t size() noexcept
 		{
-			return size_;
+			return static_cast<DataBlockHeader*>(data_)->size;
 		}
 
 
 	private:
 
-		std::atomic_size_t numOfAcquired_;
-		char padding[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic_size_t)]{};
-
 		void* data_;
-		size_t offset_;
-		size_t size_;
 	};
 
-	enum class DataState : uint8_t
-	{
-		Write = 0,
-		Read
-	};
-
-	struct DataHeader
-	{
-		DataState state;
-
-		DataBlock* dataBlock;
-		std::atomic<DataHeader*> next;
-	};
-
+	
 	
 
 	template<typename T>
@@ -270,8 +279,7 @@ namespace greezez_mpsc
 		friend class Producer;
 
 	public:
-		Consumer() noexcept :
-			head_(nullptr), tail_(nullptr), dummy_{DataState::Read, nullptr, nullptr}
+		Consumer() noexcept 
 		{
 		}
 
@@ -289,13 +297,7 @@ namespace greezez_mpsc
 
 	private:
 
-		std::atomic<DataHeader*> head_;
-		char padding1[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<DataHeader*>)]{};
-
-		std::atomic<DataHeader*> tail_;
-		char padding2[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<DataHeader*>)]{};
-
-		DataHeader dummy_;
+		
 
 	};
 
@@ -310,25 +312,12 @@ namespace greezez_mpsc
 		Produser(size_t dataBlockCount, size_t objectCountPerDataBlock, bool& success) noexcept :
 			dataBlockList_()
 		{
-			for (size_t i = 0; i < dataBlockCount; i++)
-			{
-				bool allocSuccess = false;
-
-				if (!dataBlockList_.emplaceFront(GREEZEZ_MIN_DATA_BOCK_SIZE * objectCountPerDataBlock, allocSuccess) or !allocSuccess)
-				{
-					dataBlockList_.clear();
-					success = false;
-					return;
-				}
-			}
-
-			dataBlockList_.resetCurrent();
-			success = true;
+			
 		}
 
 		~Produser()
 		{
-			dataBlockList_.clear();
+			
 		}
 
 		template<typename ... ARGS>
@@ -339,20 +328,12 @@ namespace greezez_mpsc
 		bool sendTo(Consumer<T>& consumer, ARGS& ... args) noexcept
 		{}
 
-	private:
-
-
 
 	private:
 
 		details::List<DataBlock> dataBlockList_;
-	};
-	
-
-	
-
-
 		
+	};
 	
 }
 
