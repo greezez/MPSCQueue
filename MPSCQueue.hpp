@@ -198,7 +198,6 @@ namespace greezez
 			size_t size;
 			char padding2[GREEZEZ_CACHE_LINE_SIZE - (sizeof(size_t) * 2)];
 		};
-
 		
 
 		DataBlock(size_t size, bool& success) noexcept :
@@ -220,6 +219,7 @@ namespace greezez
 
 			success = true;
 		}
+
 
 		~DataBlock()
 		{
@@ -266,11 +266,60 @@ namespace greezez
 		void* data_;
 	};
 
-	
-	
 
+	
+	class UniqueData
+	{
+
+	public:
+
+		enum class State : uint8_t
+		{
+			Write = 0,
+			Read,
+		};
+
+
+		enum class AllocType : uint8_t
+		{
+			Pool = 0,
+			Heap
+		};
+
+	
+		UniqueData()
+		{
+		}
+
+
+		~UniqueData()
+		{
+		}
+
+
+		void* get() noexcept
+		{
+			
+		}
+
+
+	private:
+
+		State state;
+		AllocType allocType;
+
+		uint16_t offset;
+
+		void* data_;
+		std::atomic<UniqueData*> next_;
+	};
+
+
+	
 	template<typename T>
 	class Produser;
+
+
 
 	template<typename T>
 	class Consumer
@@ -298,7 +347,6 @@ namespace greezez
 	private:
 
 		
-
 	};
 
 
