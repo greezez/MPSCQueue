@@ -184,26 +184,38 @@ namespace greezez
 
 	}
 
-	class DataBlock
+	class Data
 	{
 
 	public:
 
-		struct DataBlockHeader
+		struct Header
 		{
 			std::atomic_size_t numOfAcquired;
 			char padding1[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic_size_t)];
 
 			size_t offset;
-			size_t size;
-			char padding2[GREEZEZ_CACHE_LINE_SIZE - (sizeof(size_t) * 2)];
+			size_t blockCount;
+			size_t flag;
+			char padding2[GREEZEZ_CACHE_LINE_SIZE - (sizeof(size_t) * 3)];
+
+
+			void release() noexcept
+			{
+				numOfAcquired.fetch_sub(1, std::memory_order_release);
+			}
 		};
 		
+		static constexpr size_t BlockSize = GREEZEZ_CACHE_LINE_SIZE;
+		static constexpr size_t HeaderSize = sizeof(Header);
 
-		DataBlock(size_t size, bool& success) noexcept :
-			data_(nullptr)
+		static_assert(HeaderSize == BlockSize * 2, "sizeof(DataBlockHeader) != 128 byte!!!");
+
+
+		Data(size_t blockCount, bool& success) noexcept :
+			header_(nullptr), data_(nullptr)
 		{
-			data_ = std::malloc((2 * GREEZEZ_CACHE_LINE_SIZE) + size);
+			data_ = std::malloc(HeaderSize + blockCount* BlockSize);
 
 			if (data_ == nullptr)
 			{
@@ -211,72 +223,95 @@ namespace greezez
 				return;
 			}
 
-			DataBlockHeader* header = static_cast<DataBlockHeader*>(data_);
+			Header* header = static_cast<Header*>(data_);
 
 			header->numOfAcquired = 0;
-			header->size = size;
 			header->offset = 0;
-
+			header->blockCount = blockCount;
+			header->flag = 0;
+			
+			header_ = header;
 			success = true;
 		}
 
 
-		~DataBlock()
+		~Data()
 		{
 			std::free(data_);
 		}
 
 
-		void* acquire(size_t size) noexcept
+		void* acquire(size_t blockCount) noexcept
 		{
-			DataBlockHeader* header = static_cast<DataBlockHeader*>(data_);
-
-			if (size > (header->size - header->offset))
+			if (reset())
 				return nullptr;
 
-			void* ptr = static_cast<void*>(static_cast<uint8_t*>(data_) + (GREEZEZ_CACHE_LINE_SIZE * 2) + header->offset );
-			header->offset += size;
+			if (blockCount > (header_->blockCount - header_->offset))
+			{
+				header_->offset = 1;
+				return nullptr;
+			}
 
-			header->numOfAcquired.fetch_add(1, std::memory_order_release);
+			void* ptr = static_cast<void*>(static_cast<uint8_t*>(data_) + HeaderSize + header_->offset * BlockSize);
+			header_->offset += blockCount;
+
+			header_->numOfAcquired.fetch_add(1, std::memory_order_release);
 
 			return ptr;
 		}
 
 
-		void release() noexcept
+		size_t offset() noexcept
 		{
-			static_cast<DataBlockHeader*>(data_) -> numOfAcquired.fetch_sub(1, std::memory_order_release);
+			return header_->offset;
 		}
 
 
-		void reset() noexcept
+		size_t blockCount() noexcept
 		{
-			static_cast<DataBlockHeader*>(data_) -> offset = 0;
-		}
-
-
-		size_t size() noexcept
-		{
-			return static_cast<DataBlockHeader*>(data_)->size;
+			return header_->blockCount;
 		}
 
 
 	private:
 
+		bool reset() noexcept
+		{
+			if (header_->flag == 0)
+				return false;
+
+			if (header_->numOfAcquired.load(std::memory_order_release) == 0)
+			{
+				header_->offset = 0;
+				header_->flag = 0;
+
+				return false;
+			}		
+
+			return true;
+		}
+
+	private:
+
+		Data::Header* header_;
 		void* data_;
 	};
 
 
+
+	class Producer;
 	
 	class UniqueData
 	{
+
+		friend class Producer;
 
 	public:
 
 		enum class State : uint8_t
 		{
-			Write = 0,
-			Read,
+			Recorded = 0,
+			Utilized,
 		};
 
 
@@ -286,48 +321,91 @@ namespace greezez
 			Heap
 		};
 
+
+		UniqueData(nullptr_t) noexcept :
+			state_(State::Utilized), allocType_(AllocType::Heap), offset_(0),
+			data_(nullptr), next_(nullptr)
+		{}
 	
-		UniqueData()
-		{
-		}
+
+		UniqueData() noexcept :
+			state_(State::Recorded), allocType_(AllocType::Pool), offset_(0),
+			data_(nullptr), next_(nullptr)
+		{}
 
 
 		~UniqueData()
 		{
+			release();
 		}
 
 
 		void* get() noexcept
 		{
+			return static_cast<void*>(static_cast<uint8_t*>(data_) + sizeof(UniqueData));
+		}
+
+
+		void release() noexcept
+		{
+			if (!isValid())
+				return;
+
+			if (allocType_ == AllocType::Heap)
+			{
+				std::free(data_);
+				return;
+			}
+
+			Data::Header* header = reinterpret_cast<Data::Header*>
+				(static_cast<uint8_t*>(data_) - (Data::HeaderSize + offset_ * Data::BlockSize));
+
+			header->release();
+		}
+
+
+		bool isValid() noexcept
+		{
+			return data_ != nullptr;
+		}
+
+		void DEBUGE()
+		{
+			Data::Header* h = reinterpret_cast<Data::Header*>
+				(static_cast<uint8_t*>(data_) - (Data::HeaderSize + offset_ * Data::BlockSize));
+
+			std::cout << h->numOfAcquired.load() << std::endl;
 			
 		}
+
+	private:
+
+		UniqueData(State state, AllocType allocType, uint16_t offset, void* data) noexcept :
+			state_(state), allocType_(allocType), offset_(offset),
+			data_(data), next_(nullptr)
+		{}
 
 
 	private:
 
-		State state;
-		AllocType allocType;
+		State state_;
+		AllocType allocType_;
 
-		uint16_t offset;
+		uint16_t offset_;
 
 		void* data_;
 		std::atomic<UniqueData*> next_;
 	};
 
-
 	
-	template<typename T>
-	class Produser;
 
-
-
-	template<typename T>
 	class Consumer
 	{
 
 		friend class Producer;
 
 	public:
+
 		Consumer() noexcept 
 		{
 		}
@@ -336,6 +414,7 @@ namespace greezez
 		{
 		}
 
+		template<typename T>
 		void recive() noexcept
 		{}
 
@@ -351,35 +430,83 @@ namespace greezez
 
 
 
-	template<typename T>
-	class Produser
+	class Producer
 	{
 
 	public:
 
-		Produser(size_t dataBlockCount, size_t objectCountPerDataBlock, bool& success) noexcept :
-			dataBlockList_()
+		Producer(size_t dataPoolSize, size_t dataBlockCount, bool& success) noexcept :
+			dataBlockCount_(dataBlockCount), dataList_()
 		{
-			
+			bool allocSuccess = false;
+
+			for (size_t i = 0; i < dataPoolSize; i++)
+			{
+				if (!dataList_.emplaceFront(dataBlockCount, allocSuccess) or !allocSuccess)
+				{
+					dataList_.clear();
+					success = false;
+					return;
+				}
+			}
+
+			success = true;
 		}
 
-		~Produser()
+
+		~Producer()
 		{
-			
+			dataList_.clear();
+		}
+		
+
+		template<typename T>
+		UniqueData* tryAcquire() noexcept
+		{
+			constexpr size_t blockCount = (sizeof(UniqueData) + sizeof(T) <= Data::BlockSize) 
+				? 1 : ((sizeof(UniqueData) + sizeof(T)) / Data::BlockSize) + 1;
+
+			bool firstTry = true;
+
+			while (true)
+			{
+				Data& data = dataList_.current();
+				uint16_t currentOffset = static_cast<uint16_t>(data.offset());
+
+				void* ptr = data.acquire(blockCount);
+
+				if (ptr != nullptr)
+				{
+					UniqueData* uniqueData = new(ptr) UniqueData(UniqueData::State::Recorded, UniqueData::AllocType::Pool, currentOffset, ptr);
+					return uniqueData;
+				}
+
+				if (!firstTry)
+					return nullptr;
+
+				firstTry = false;
+
+				dataList_.updateCurrent();
+			}
 		}
 
-		template<typename ... ARGS>
-		bool trySendTo(Consumer<T>& consumer, ARGS& ... args) noexcept 
-		{}
 
-		template<typename ... ARGS>
-		bool sendTo(Consumer<T>& consumer, ARGS& ... args) noexcept
-		{}
+		template<typename T>
+		UniqueData* acquire() noexcept
+		{
+		
+		}
 
+
+		size_t size() noexcept
+		{
+			return dataList_.size();
+		}
 
 	private:
 
-		details::List<DataBlock> dataBlockList_;
+		size_t dataBlockCount_;
+		details::List<Data> dataList_;
 		
 	};
 	
