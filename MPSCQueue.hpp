@@ -98,28 +98,28 @@ namespace greezez
 
 
 			template<typename ... ARGS>
-			T* emplaceAndUpdateCurrent(ARGS&& ... args) noexcept
+			bool emplaceAndUpdateCurrent(ARGS&& ... args) noexcept
 			{
 				if (head_ == nullptr)
 				{
 					if (emplaceFront(std::forward<ARGS>(args)...))
-						return &head_;
+						return true;
 
-					return nullptr;
+					return false;
 				}
 
 				Node* node = new(std::nothrow) Node(std::forward<ARGS>(args) ...);
 
 				if (node == nullptr)
-					return nullptr;
+					return false;;
 
 				node->next = current_->next;
 				current_->next = node;
-				current_ = node->next;
+				current_ = node;
 
 				size_++;
 
-				return &node->item;
+				return true;
 			}
 
 
@@ -184,6 +184,8 @@ namespace greezez
 
 	}
 
+
+
 	class Data
 	{
 
@@ -198,12 +200,6 @@ namespace greezez
 			size_t blockCount;
 			size_t flag;
 			char padding2[GREEZEZ_CACHE_LINE_SIZE - (sizeof(size_t) * 3)];
-
-
-			void release() noexcept
-			{
-				numOfAcquired.fetch_sub(1, std::memory_order_release);
-			}
 		};
 		
 		static constexpr size_t BlockSize = GREEZEZ_CACHE_LINE_SIZE;
@@ -223,14 +219,13 @@ namespace greezez
 				return;
 			}
 
-			Header* header = static_cast<Header*>(data_);
+			header_ = static_cast<Header*>(data_);
 
-			header->numOfAcquired = 0;
-			header->offset = 0;
-			header->blockCount = blockCount;
-			header->flag = 0;
+			header_->numOfAcquired = 0;
+			header_->offset = 0;
+			header_->blockCount = blockCount;
+			header_->flag = 0;
 			
-			header_ = header;
 			success = true;
 		}
 
@@ -322,9 +317,9 @@ namespace greezez
 		};
 
 
-		UniqueData(nullptr_t) noexcept :
+		UniqueData(nullptr_t, void* data) noexcept :
 			state_(State::Utilized), allocType_(AllocType::Heap), offset_(0),
-			data_(nullptr), next_(nullptr)
+			data_(data), next_(nullptr)
 		{}
 	
 
@@ -340,9 +335,16 @@ namespace greezez
 		}
 
 
-		void* get() noexcept
+		void* raw() noexcept
 		{
 			return static_cast<void*>(static_cast<uint8_t*>(data_) + sizeof(UniqueData));
+		}
+
+
+		template<typename T>
+		T* get() noexcept
+		{
+			return static_cast<T*>(raw());
 		}
 
 
@@ -357,10 +359,10 @@ namespace greezez
 				return;
 			}
 
-			Data::Header* header = reinterpret_cast<Data::Header*>
+			Data::Header* dataHeader = reinterpret_cast<Data::Header*>
 				(static_cast<uint8_t*>(data_) - (Data::HeaderSize + offset_ * Data::BlockSize));
 
-			header->release();
+			dataHeader->numOfAcquired.fetch_sub(1, std::memory_order_release);
 		}
 
 
@@ -369,14 +371,6 @@ namespace greezez
 			return data_ != nullptr;
 		}
 
-		void DEBUGE()
-		{
-			Data::Header* h = reinterpret_cast<Data::Header*>
-				(static_cast<uint8_t*>(data_) - (Data::HeaderSize + offset_ * Data::BlockSize));
-
-			std::cout << h->numOfAcquired.load() << std::endl;
-			
-		}
 
 	private:
 
@@ -402,8 +396,6 @@ namespace greezez
 	class Consumer
 	{
 
-		friend class Producer;
-
 	public:
 
 		Consumer() noexcept 
@@ -418,11 +410,10 @@ namespace greezez
 		void recive() noexcept
 		{}
 
-	private:
 
-		void send() noexcept 
+		void send(UniqueData* uniqueData) noexcept
 		{}
-
+	
 	private:
 
 		
@@ -494,8 +485,45 @@ namespace greezez
 		template<typename T>
 		UniqueData* acquire() noexcept
 		{
-		
+			UniqueData* uniqueData = tryAcquire<T>();
+
+			if (uniqueData != nullptr)
+				return uniqueData;
+
+			bool succes = false;
+			if (!dataList_.emplaceAndUpdateCurrent(dataList_.front().blockCount(), succes) or !succes)
+				return nullptr;
+
+			return tryAcquire<T>();
 		}
+
+
+		template<bool Alloc, typename T, typename ... ARGS>
+		UniqueData* acquireAndEmplace(ARGS&& ... args) noexcept
+		{
+			UniqueData* uniqueData = nullptr;
+
+			if (Alloc)
+				uniqueData = acquire<T>();
+			else
+				uniqueData = tryAcquire<T>();
+
+			if (uniqueData == nullptr)
+				return nullptr;
+
+			new(uniqueData->get()) T(std::forward<ARGS>(args) ...);
+
+			return uniqueData;
+		}
+
+
+		template<typename T>
+		UniqueData* acquireFromHeap() noexcept
+		{}
+
+
+		bool sendTo(Consumer& consumer) noexcept
+		{}
 
 
 		size_t size() noexcept
@@ -507,7 +535,6 @@ namespace greezez
 
 		size_t dataBlockCount_;
 		details::List<Data> dataList_;
-		
 	};
 	
 }
