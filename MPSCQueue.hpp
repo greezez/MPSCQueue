@@ -295,11 +295,15 @@ namespace greezez
 
 
 	class Producer;
+	class Consumer;
 	
+
+
 	class UniqueData
 	{
 
 		friend class Producer;
+		friend class Consumer;
 
 	public:
 
@@ -348,6 +352,13 @@ namespace greezez
 		}
 
 
+		template<typename T, typename ... ARGS>
+		T* emplace(ARGS&& ... args) noexcept
+		{
+			return new(raw()) T(std::forward<ARGS>(args) ...);
+		}
+
+
 		void release() noexcept
 		{
 			if (!isValid())
@@ -389,34 +400,6 @@ namespace greezez
 
 		void* data_;
 		std::atomic<UniqueData*> next_;
-	};
-
-	
-
-	class Consumer
-	{
-
-	public:
-
-		Consumer() noexcept 
-		{
-		}
-
-		~Consumer()
-		{
-		}
-
-		template<typename T>
-		void recive() noexcept
-		{}
-
-
-		void send(UniqueData* uniqueData) noexcept
-		{}
-	
-	private:
-
-		
 	};
 
 
@@ -481,7 +464,7 @@ namespace greezez
 			}
 		}
 
-
+		
 		template<typename T>
 		UniqueData* acquire() noexcept
 		{
@@ -498,32 +481,19 @@ namespace greezez
 		}
 
 
-		template<bool Alloc, typename T, typename ... ARGS>
-		UniqueData* acquireAndEmplace(ARGS&& ... args) noexcept
-		{
-			UniqueData* uniqueData = nullptr;
-
-			if (Alloc)
-				uniqueData = acquire<T>();
-			else
-				uniqueData = tryAcquire<T>();
-
-			if (uniqueData == nullptr)
-				return nullptr;
-
-			new(uniqueData->get()) T(std::forward<ARGS>(args) ...);
-
-			return uniqueData;
-		}
-
-
 		template<typename T>
 		UniqueData* acquireFromHeap() noexcept
-		{}
+		{
+			void* ptr = std::malloc(sizeof(UniqueData) + sizeof(T));
 
+			if (ptr != nullptr)
+			{
+				UniqueData* uniqueData = new(ptr) UniqueData(UniqueData::State::Recorded, UniqueData::AllocType::Heap, 0, ptr);
+				return uniqueData;
+			}
 
-		bool sendTo(Consumer& consumer) noexcept
-		{}
+			return nullptr;
+		}
 
 
 		size_t size() noexcept
@@ -531,12 +501,98 @@ namespace greezez
 			return dataList_.size();
 		}
 
+
 	private:
 
 		size_t dataBlockCount_;
 		details::List<Data> dataList_;
 	};
-	
+
+
+
+	class Consumer
+	{
+
+	public:
+
+		Consumer(bool& succes) noexcept :
+			head_(nullptr), tail_(nullptr), numOfData_(0)
+		{
+			void* ptr = std::malloc(sizeof(UniqueData));
+
+			if (ptr != nullptr)
+			{
+				UniqueData* uniqueData = new(ptr) UniqueData(nullptr, ptr);
+
+				head_.store(uniqueData, std::memory_order_relaxed);
+				tail_.store(uniqueData, std::memory_order_release);
+
+				succes = true;
+				return;
+			}
+
+			succes = false;
+		}
+
+
+		~Consumer()
+		{
+		}
+
+
+		UniqueData* pop() noexcept
+		{
+		//next...
+		}
+
+
+		bool push(UniqueData* uniqueData) noexcept
+		{
+			if (uniqueData == nullptr)
+				return false;
+
+			while (true)
+			{
+				UniqueData* tail = tail_.load(std::memory_order_acquire);
+				UniqueData* next = tail->next_.load(std::memory_order_acquire);
+
+				if (next == nullptr)
+				{
+					if (tail->next_.compare_exchange_weak(next, uniqueData))
+					{
+						tail_.compare_exchange_strong(tail, uniqueData);
+
+						numOfData_.fetch_add(1, std::memory_order_release);
+
+						return true;
+					}
+				}
+				else
+				{
+					tail_.compare_exchange_strong(tail, next);
+				}
+			}
+
+			return false;
+		}
+
+
+		size_t numOfData() noexcept
+		{
+			return numOfData_.load(std::memory_order_acquire);
+		}
+
+	private:
+
+		std::atomic<UniqueData*> head_;
+		char padding1[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<UniqueData*>)]{};
+
+		std::atomic<UniqueData*> tail_;
+		char padding2[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<UniqueData*>)]{};
+
+		std::atomic_size_t numOfData_;
+
+	};
 }
 
 #endif // !GREEZEZ_MPSCQUEUE_HPP
