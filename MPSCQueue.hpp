@@ -317,15 +317,9 @@ namespace greezez
 		enum class AllocType : uint8_t
 		{
 			Pool = 0,
-			Heap
+			Heap,
 		};
 
-
-		UniqueData(nullptr_t, void* data) noexcept :
-			state_(State::Utilized), allocType_(AllocType::Heap), offset_(0),
-			data_(data), next_(nullptr)
-		{}
-	
 
 		UniqueData() noexcept :
 			state_(State::Recorded), allocType_(AllocType::Pool), offset_(0),
@@ -333,9 +327,60 @@ namespace greezez
 		{}
 
 
+		UniqueData(const UniqueData&) = delete;
+		UniqueData& operator=(const UniqueData& other) = delete;
+
+
+		UniqueData(UniqueData&& other) noexcept :
+			state_(other.state_), allocType_(other.allocType_), offset_(other.offset_),
+			data_(other.data_), next_(nullptr)
+		{
+			other.data_ = nullptr;
+		}
+
+
+		UniqueData& operator=(UniqueData&& other) noexcept
+		{
+			if (&other == this)
+				return *this;
+
+			state_ = other.state_; 
+			allocType_ = other.allocType_; 
+			offset_ = other.offset_;
+			data_ = other.data_; 
+			next_ = nullptr;
+
+			other.data_ = nullptr;
+
+			return *this;
+		}
+
+
 		~UniqueData()
 		{
 			release();
+		}
+
+
+		template<size_t Size>
+		static UniqueData* make() noexcept
+		{
+			void* ptr = std::malloc(sizeof(UniqueData) + Size);
+
+			if (ptr != nullptr)
+			{
+				UniqueData* uniqueData = new(ptr) UniqueData(UniqueData::State::Recorded, UniqueData::AllocType::Heap, 0, ptr);
+				return uniqueData;
+			}
+
+			return nullptr;
+		}
+
+		
+		template<typename T>
+		static UniqueData* make()
+		{
+			return UniqueData::make<sizeof(T)>();
 		}
 
 
@@ -387,6 +432,12 @@ namespace greezez
 
 		UniqueData(State state, AllocType allocType, uint16_t offset, void* data) noexcept :
 			state_(state), allocType_(allocType), offset_(offset),
+			data_(data), next_(nullptr)
+		{}
+
+
+		UniqueData(nullptr_t, void* data) noexcept :
+			state_(State::Utilized), allocType_(AllocType::Heap), offset_(0),
 			data_(data), next_(nullptr)
 		{}
 
@@ -478,21 +529,6 @@ namespace greezez
 				return nullptr;
 
 			return tryAcquire<T>();
-		}
-
-
-		template<typename T>
-		UniqueData* acquireFromHeap() noexcept
-		{
-			void* ptr = std::malloc(sizeof(UniqueData) + sizeof(T));
-
-			if (ptr != nullptr)
-			{
-				UniqueData* uniqueData = new(ptr) UniqueData(UniqueData::State::Recorded, UniqueData::AllocType::Heap, 0, ptr);
-				return uniqueData;
-			}
-
-			return nullptr;
 		}
 
 
