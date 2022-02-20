@@ -549,13 +549,13 @@ namespace greezez
 		public:
 
 			Queue(bool& succes) noexcept :
-				head_(nullptr), firstPtr(nullptr), tail_(nullptr), numOfInQueue_(0)
+				head_(nullptr), dummy(nullptr), tail_(nullptr), numOfInQueue_(0)
 			{
-				firstPtr = std::malloc(sizeof(UniqueData));
+				dummy = std::malloc(sizeof(UniqueData));
 
-				if (firstPtr != nullptr)
+				if (dummy != nullptr)
 				{
-					UniqueData* uniqueData = new(firstPtr) UniqueData(nullptr, firstPtr);
+					UniqueData* uniqueData = new(dummy) UniqueData(nullptr, dummy);
 
 					head_.store(uniqueData, std::memory_order_relaxed);
 					tail_.store(uniqueData, std::memory_order_release);
@@ -664,15 +664,13 @@ namespace greezez
 		private:
 
 			std::atomic<UniqueData*> head_;
-			void* firstPtr;
+			void* dummy;
 			char padding1[GREEZEZ_CACHE_LINE_SIZE - (sizeof(std::atomic<UniqueData*>) + sizeof(void*))]{};
 
 			std::atomic<UniqueData*> tail_;
 			char padding2[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<UniqueData*>)]{};
 
 			std::atomic_size_t numOfInQueue_;
-
-			
 
 		};
 	}
