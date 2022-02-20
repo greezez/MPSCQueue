@@ -573,7 +573,7 @@ namespace greezez
 				while (numOfInQueue() > 0)
 					pop()->release();
 
-				std::free(firstPtr);
+				std::free(dummy);
 			}
 
 
