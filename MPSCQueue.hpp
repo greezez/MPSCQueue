@@ -585,7 +585,49 @@ namespace greezez
 
 			UniqueData* pop() noexcept
 			{
-				//next...
+				bool firstTry = true;
+
+				while (true)
+				{
+					UniqueData* head = head_.load(std::memory_order_acquire);
+					UniqueData* tail = tail_.load(std::memory_order_acquire);
+
+					UniqueData* tailNext = tail->next_.load(std::memory_order_acquire);
+
+					if (head == tail)
+					{
+						if (head->state_ == UniqueData::State::Recorded)
+						{
+							head->state_ = UniqueData::State::Utilized;
+
+							return head;
+						}
+
+						if(tailNext != nullptr)
+							tail_.compare_exchange_strong(tail, tailNext);
+
+						return nullptr;
+					}
+
+					UniqueData* headNext = head->next_.load(std::memory_order_acquire);
+					head_.store(headNext, std::memory_order_release);
+
+					numOfInQueue_.fetch_sub(1, std::memory_order_release);
+
+					if (head->state_ == UniqueData::State::Utilized)
+					{
+						if (!firstTry)
+							return nullptr;
+
+						firstTry = false;
+						continue;
+					}
+
+					head->state_ = UniqueData::State::Utilized;
+					
+					return head;
+				}
+
 			}
 
 
