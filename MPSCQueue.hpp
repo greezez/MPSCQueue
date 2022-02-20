@@ -301,7 +301,7 @@ namespace greezez
 		class Queue;
 
 
-
+		// The UniqueData class provides wrapper for raw data, allocated in pool or heap.
 		class UniqueData
 		{
 
@@ -324,6 +324,9 @@ namespace greezez
 			};
 
 
+			// Constructs a UniqueData
+			//
+			// Ñreates an empty UniqueData class.
 			UniqueData() noexcept :
 				state_(State::Recorded), allocType_(AllocType::Pool), offset_(0),
 				data_(nullptr), next_(nullptr), padding(0)
@@ -365,10 +368,11 @@ namespace greezez
 			}
 
 
-			template<size_t Size>
+			// Creates UniqueData, size <TypeSize> in heap.
+			template<size_t TypeSize>
 			static UniqueData* make() noexcept
 			{
-				void* ptr = std::malloc(sizeof(UniqueData) + Size);
+				void* ptr = std::malloc(sizeof(UniqueData) + TypeSize);
 
 				if (ptr != nullptr)
 				{
@@ -380,19 +384,28 @@ namespace greezez
 			}
 
 
+			// return raw pointer to data.
+			//
+			// recommend: use with method UniqueData::isValid().
 			void* raw() noexcept
 			{
 				return static_cast<void*>(static_cast<uint8_t*>(data_) + sizeof(UniqueData));
 			}
 
 
+			// return pointer to casted in type <T>
+			//
+			// recommend: use with method UniqueData::isValid().
 			template<typename T>
 			T* get() noexcept
 			{
 				return static_cast<T*>(raw());
 			}
 
-
+			
+			// places a class <T>, with arguments <ARGS>, in the data.
+			//
+			// recommend: use with method UniqueData::isValid().
 			template<typename T, typename ... ARGS>
 			T* emplace(ARGS&& ... args) noexcept
 			{
@@ -400,6 +413,8 @@ namespace greezez
 			}
 
 
+			// if the date is allocated on the heap, frees the data with the method std::free!
+			// if the date is allocated on the pool, returns data to the pool.
 			void release() noexcept
 			{
 				if (!isValid())
@@ -418,6 +433,7 @@ namespace greezez
 			}
 
 
+			// return true, if UniqueData owned data.
 			bool isValid() noexcept
 			{
 				return data_ != nullptr;
@@ -426,12 +442,14 @@ namespace greezez
 
 		private:
 
+			// constructor for class friends
 			UniqueData(State state, AllocType allocType, uint32_t offset, void* data) noexcept :
 				state_(state), allocType_(allocType), offset_(offset),
 				data_(data), next_(nullptr), padding(0)
 			{}
 
 
+			// constructor for class friends
 			UniqueData(nullptr_t, void* data) noexcept :
 				state_(State::Utilized), allocType_(AllocType::Heap), offset_(0),
 				data_(data), next_(nullptr), padding(0)
@@ -451,20 +469,28 @@ namespace greezez
 		};
 
 
-
+		// The UniqueDataPool class provides dynamic pool UniqueData.
 		class UniqueDataPool
 		{
 
 		public:
 
-			UniqueDataPool(size_t dataPoolSize, size_t dataBlockCount, bool& success) noexcept :
-				dataBlockCount_(dataBlockCount), dataList_()
+			// Constructs a UniqueDataPool
+			//
+			// poolSize, number of memory blocks.
+			// dataBlockSize, the number of blocks that make up the raw data. The block size is GREEZEZ_CACHE_LINE_SIZE == 64 in default.
+			//		final size: dataBlockSize * GREEZEZ_CACHE_LINE_SIZE.
+			// 
+			// success == true, if all data is allocated correctly.
+			// success == false, if there is not enough memory to allocate data.
+			UniqueDataPool(size_t poolSize, size_t dataBlockSize, bool& success) noexcept :
+				dataBlockSize_(dataBlockSize), dataList_()
 			{
 				bool allocSuccess = false;
 
-				for (size_t i = 0; i < dataPoolSize; i++)
+				for (size_t i = 0; i < poolSize; i++)
 				{
-					if (!dataList_.emplaceFront(dataBlockCount, allocSuccess) or !allocSuccess)
+					if (!dataList_.emplaceFront(dataBlockSize, allocSuccess) or !allocSuccess)
 					{
 						dataList_.clear();
 						success = false;
@@ -482,6 +508,9 @@ namespace greezez
 			}
 
 
+			// tries to allocate data of size <TypeSize>.
+			//
+			// return nulptr, if pool full.
 			template<size_t TypeSize>
 			UniqueData* tryAcquire() noexcept
 			{
@@ -513,6 +542,9 @@ namespace greezez
 			}
 
 
+			// allocates data of size <TypeSize>, if the pool is full then allocate a new block of data.
+			//
+			// retutn nullptr, if there is not enough memory to allocate block of data.
 			template<size_t TypeSize>
 			UniqueData* acquire() noexcept
 			{
@@ -522,13 +554,13 @@ namespace greezez
 					return uniqueData;
 
 				bool succes = false;
-				if (!dataList_.emplaceAndUpdateCurrent(dataBlockCount_, succes) or !succes)
+				if (!dataList_.emplaceAndUpdateCurrent(dataBlockSize_, succes) or !succes)
 					return nullptr;
 
 				return tryAcquire<TypeSize>();
 			}
 
-
+			// return the number of data blocks
 			size_t size() noexcept
 			{
 				return dataList_.size();
@@ -537,17 +569,20 @@ namespace greezez
 
 		private:
 
-			size_t dataBlockCount_;
+			size_t dataBlockSize_;
 			details::List<details::Data> dataList_;
 		};
 
 
-
-		class Queue
+		// The Queue class provides a multi-writer/single-reader fifo queue, pushing and popping is wait-free.
+		class alignas(GREEZEZ_CACHE_LINE_SIZE) Queue
 		{
 
 		public:
 
+			// Constructs a Queue
+			//
+			// success = false, if a memory allocation error occurs for the first element(dummy UniqueData) of the queue.
 			Queue(bool& succes) noexcept :
 				head_(nullptr), dummy(nullptr), tail_(nullptr), numOfInQueue_(0)
 			{
@@ -577,6 +612,14 @@ namespace greezez
 			}
 
 
+			// Pops object from queue.
+			//
+			// return UniqueData pointer, if queue is not empty. 
+			// return nullptr, if queue empty or first element empty.
+			//
+			// non-blocking and non-thread-safe.
+			// 
+			// CAREFULL! only one thread is allowed to pop UniqueData to the Queue.
 			UniqueData* pop() noexcept
 			{
 				bool firstTry = true;
@@ -597,6 +640,7 @@ namespace greezez
 							return head;
 						}
 
+						//Try update tail, if next != nullptr.
 						if (tailNext != nullptr)
 							tail_.compare_exchange_strong(tail, tailNext);
 
@@ -625,6 +669,14 @@ namespace greezez
 			}
 
 
+			// Pushes object UniqueData to the queue.
+			//
+			// return false, if UniqueData = nullptr
+			// return true, if the push operation is successful.
+			//
+			// thread-safe and non-blocking.
+			//  
+			// Any thread can pushed UniqueData in queue.
 			bool push(UniqueData* uniqueData) noexcept
 			{
 				if (uniqueData == nullptr)
@@ -656,10 +708,12 @@ namespace greezez
 			}
 
 
+			// returns the number of elements(UniqueData) in the queue.
 			size_t numOfInQueue() noexcept
 			{
 				return numOfInQueue_.load(std::memory_order_acquire);
 			}
+
 
 		private:
 
