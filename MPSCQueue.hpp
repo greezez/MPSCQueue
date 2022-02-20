@@ -326,7 +326,7 @@ namespace greezez
 
 			UniqueData() noexcept :
 				state_(State::Recorded), allocType_(AllocType::Pool), offset_(0),
-				data_(nullptr), next_(nullptr)
+				data_(nullptr), next_(nullptr), padding(0)
 			{}
 
 
@@ -336,7 +336,7 @@ namespace greezez
 
 			UniqueData(UniqueData&& other) noexcept :
 				state_(other.state_), allocType_(other.allocType_), offset_(other.offset_),
-				data_(other.data_), next_(nullptr)
+				data_(other.data_), next_(nullptr), padding(0)
 			{
 				other.data_ = nullptr;
 			}
@@ -377,13 +377,6 @@ namespace greezez
 				}
 
 				return nullptr;
-			}
-
-
-			template<typename T>
-			static UniqueData* make()
-			{
-				return UniqueData::make<sizeof(T)>();
 			}
 
 
@@ -435,13 +428,13 @@ namespace greezez
 
 			UniqueData(State state, AllocType allocType, uint32_t offset, void* data) noexcept :
 				state_(state), allocType_(allocType), offset_(offset),
-				data_(data), next_(nullptr)
+				data_(data), next_(nullptr), padding(0)
 			{}
 
 
 			UniqueData(nullptr_t, void* data) noexcept :
 				state_(State::Utilized), allocType_(AllocType::Heap), offset_(0),
-				data_(data), next_(nullptr)
+				data_(data), next_(nullptr), padding(0)
 			{}
 
 
@@ -450,6 +443,7 @@ namespace greezez
 			State state_;
 			AllocType allocType_;
 
+			uint16_t padding;
 			uint32_t offset_;
 
 			void* data_;
@@ -488,11 +482,11 @@ namespace greezez
 			}
 
 
-			template<typename T>
+			template<size_t TypeSize>
 			UniqueData* tryAcquire() noexcept
 			{
-				constexpr size_t blockCount = (sizeof(UniqueData) + sizeof(T) <= details::Data::BlockSize)
-					? 1 : ((sizeof(UniqueData) + sizeof(T)) / details::Data::BlockSize) + 1;
+				constexpr size_t blockCount = (sizeof(UniqueData) + TypeSize <= details::Data::BlockSize)
+					? 1 : ((sizeof(UniqueData) + TypeSize) / details::Data::BlockSize) + 1;
 
 				bool firstTry = true;
 
@@ -519,19 +513,19 @@ namespace greezez
 			}
 
 
-			template<typename T>
+			template<size_t TypeSize>
 			UniqueData* acquire() noexcept
 			{
-				UniqueData* uniqueData = tryAcquire<T>();
+				UniqueData* uniqueData = tryAcquire<TypeSize>();
 
 				if (uniqueData != nullptr)
 					return uniqueData;
 
 				bool succes = false;
-				if (!dataList_.emplaceAndUpdateCurrent(dataList_.front().blockCount(), succes) or !succes)
+				if (!dataList_.emplaceAndUpdateCurrent(dataBlockCount_, succes) or !succes)
 					return nullptr;
 
-				return tryAcquire<T>();
+				return tryAcquire<TypeSize>();
 			}
 
 
@@ -555,7 +549,7 @@ namespace greezez
 		public:
 
 			Queue(bool& succes) noexcept :
-				head_(nullptr), tail_(nullptr), numOfInQueue_(0), firstPtr(nullptr)
+				head_(nullptr), firstPtr(nullptr), tail_(nullptr), numOfInQueue_(0)
 			{
 				firstPtr = std::malloc(sizeof(UniqueData));
 
@@ -603,7 +597,7 @@ namespace greezez
 							return head;
 						}
 
-						if(tailNext != nullptr)
+						if (tailNext != nullptr)
 							tail_.compare_exchange_strong(tail, tailNext);
 
 						return nullptr;
@@ -624,7 +618,7 @@ namespace greezez
 					}
 
 					head->state_ = UniqueData::State::Utilized;
-					
+
 					return head;
 				}
 
@@ -670,14 +664,15 @@ namespace greezez
 		private:
 
 			std::atomic<UniqueData*> head_;
-			char padding1[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<UniqueData*>)]{};
+			void* firstPtr;
+			char padding1[GREEZEZ_CACHE_LINE_SIZE - (sizeof(std::atomic<UniqueData*>) + sizeof(void*))]{};
 
 			std::atomic<UniqueData*> tail_;
 			char padding2[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<UniqueData*>)]{};
 
 			std::atomic_size_t numOfInQueue_;
 
-			void* firstPtr;
+			
 
 		};
 	}
