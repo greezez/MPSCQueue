@@ -584,6 +584,7 @@ namespace greezez
 		};
 
 
+
 		// The Queue class provides a multi-writer/single-reader fifo queue, pushing and popping is wait-free.
 		class alignas(GREEZEZ_CACHE_LINE_SIZE) Queue
 		{
@@ -605,7 +606,6 @@ namespace greezez
 			}
 
 
-			
 			// Pops object from queue.
 			//
 			// return UniqueData pointer, if queue is not empty. 
@@ -680,7 +680,7 @@ namespace greezez
 
 			std::atomic<UniqueData*> head_;
 			UniqueData dummy;
-			char padding1[GREEZEZ_CACHE_LINE_SIZE - (sizeof(std::atomic<UniqueData*>) + sizeof(void*))]{};
+			char padding1[GREEZEZ_CACHE_LINE_SIZE - (sizeof(std::atomic<UniqueData*>) + sizeof(UniqueData))]{};
 
 			std::atomic<UniqueData*> tail_;
 			char padding2[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<UniqueData*>)]{};
