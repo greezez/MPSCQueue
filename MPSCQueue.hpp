@@ -195,21 +195,21 @@ namespace greezez
 				char padding1[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic_size_t)];
 
 				size_t offset;
-				size_t blockCount;
+				size_t chunkCount;
 				size_t flag;
 				char padding2[GREEZEZ_CACHE_LINE_SIZE - (sizeof(size_t) * 3)];
 			};
 
-			static constexpr size_t BlockSize = GREEZEZ_CACHE_LINE_SIZE;
+			static constexpr size_t ChunkSize = GREEZEZ_CACHE_LINE_SIZE;
 			static constexpr size_t HeaderSize = sizeof(Header);
 
-			static_assert(HeaderSize == BlockSize * 2, "sizeof(DataBlockHeader) != 128 byte!!!");
+			static_assert(HeaderSize == ChunkSize * 2, "sizeof(DataBlockHeader) != 128 byte!!!");
 
 
-			Data(size_t blockCount, bool& success) noexcept :
+			Data(size_t chunkCount, bool& success) noexcept :
 				header_(nullptr), data_(nullptr)
 			{
-				data_ = std::malloc(HeaderSize + blockCount * BlockSize);
+				data_ = std::malloc(HeaderSize + (chunkCount * ChunkSize));
 
 				if (data_ == nullptr)
 				{
@@ -221,7 +221,7 @@ namespace greezez
 
 				header_->numOfAcquired = 0;
 				header_->offset = 0;
-				header_->blockCount = blockCount;
+				header_->chunkCount = chunkCount;
 				header_->flag = 0;
 
 				success = true;
@@ -234,19 +234,19 @@ namespace greezez
 			}
 
 
-			void* acquire(size_t blockCount) noexcept
+			void* acquire(size_t chunkCount) noexcept
 			{
 				if (reset())
 					return nullptr;
 
-				if (blockCount > (header_->blockCount - header_->offset))
+				if (chunkCount > (header_->chunkCount - header_->offset))
 				{
 					header_->offset = 1;
 					return nullptr;
 				}
 
-				void* ptr = static_cast<void*>(static_cast<uint8_t*>(data_) + HeaderSize + header_->offset * BlockSize);
-				header_->offset += blockCount;
+				void* ptr = static_cast<void*>(static_cast<uint8_t*>(data_) + HeaderSize + header_->offset * ChunkSize);
+				header_->offset += chunkCount;
 
 				header_->numOfAcquired.fetch_add(1, std::memory_order_release);
 
@@ -262,7 +262,7 @@ namespace greezez
 
 			size_t blockCount() noexcept
 			{
-				return header_->blockCount;
+				return header_->chunkCount;
 			}
 
 
@@ -427,7 +427,7 @@ namespace greezez
 				}
 
 				details::Data::Header* dataHeader = reinterpret_cast<details::Data::Header*>
-					(static_cast<uint8_t*>(data_) - (details::Data::HeaderSize + offset_ * details::Data::BlockSize));
+					(static_cast<uint8_t*>(data_) - (details::Data::HeaderSize + offset_ * details::Data::ChunkSize));
 
 				dataHeader->numOfAcquired.fetch_sub(1, std::memory_order_release);
 			}
@@ -477,27 +477,29 @@ namespace greezez
 
 			// Constructs a UniqueDataPool
 			//
-			// poolSize, number of memory blocks.
-			// dataBlockSize, the number of blocks that make up the raw data. The block size is GREEZEZ_CACHE_LINE_SIZE == 64 in default.
-			//		final size: dataBlockSize * GREEZEZ_CACHE_LINE_SIZE.
+			// dataBlockCount, number of data blocks.
+			// 
+			// numOfChunkInDataBlock, number of chunk in a data block.
+			// chunk size == GREEZEZ_CACHE_LINE_SIZE (default 64 byte).
+			// final size of one data block == (128 byte header) + numOfChunkInDataBlock * GREEZEZ_CACHE_LINE_SIZE  
 			// 
 			// success == true, if all data is allocated correctly.
 			// success == false, if there is not enough memory to allocate data.
-			UniqueDataPool(size_t poolSize, size_t dataBlockSize, bool& success) noexcept :
-				dataBlockSize_(dataBlockSize), dataList_()
+			UniqueDataPool(size_t dataBlockCount, size_t numOfChunkInDataBlock, bool& success) noexcept :
+				numOfChunkInDataBlock_(numOfChunkInDataBlock), dataList_()
 			{
 				bool allocSuccess = false;
 
-				for (size_t i = 0; i < poolSize; i++)
+				for (size_t i = 0; i < dataBlockCount; i++)
 				{
-					if (!dataList_.emplaceFront(dataBlockSize, allocSuccess) or !allocSuccess)
+					if (!dataList_.emplaceFront(numOfChunkInDataBlock, allocSuccess) or !allocSuccess)
 					{
 						dataList_.clear();
 						success = false;
 						return;
 					}
 				}
-
+				
 				success = true;
 			}
 
@@ -514,8 +516,8 @@ namespace greezez
 			template<size_t TypeSize>
 			UniqueData* tryAcquire() noexcept
 			{
-				constexpr size_t blockCount = (sizeof(UniqueData) + TypeSize <= details::Data::BlockSize)
-					? 1 : ((sizeof(UniqueData) + TypeSize) / details::Data::BlockSize) + 1;
+				constexpr size_t blockCount = (sizeof(UniqueData) + TypeSize <= details::Data::ChunkSize)
+					? 1 : ((sizeof(UniqueData) + TypeSize) / details::Data::ChunkSize) + 1;
 
 				bool firstTry = true;
 
@@ -554,7 +556,7 @@ namespace greezez
 					return uniqueData;
 
 				bool succes = false;
-				if (!dataList_.emplaceAndUpdateCurrent(dataBlockSize_, succes) or !succes)
+				if (!dataList_.emplaceAndUpdateCurrent(numOfChunkInDataBlock_, succes) or !succes)
 					return nullptr;
 
 				return tryAcquire<TypeSize>();
@@ -569,7 +571,7 @@ namespace greezez
 
 		private:
 
-			size_t dataBlockSize_;
+			size_t numOfChunkInDataBlock_;
 			details::List<details::Data> dataList_;
 		};
 
