@@ -321,6 +321,9 @@ namespace greezez
 			{
 				Pool = 0,
 				Heap,
+
+				// needed for dummy UniqueData
+				Stack,
 			};
 
 
@@ -420,16 +423,21 @@ namespace greezez
 				if (!isValid())
 					return;
 
+				if (allocType_ == AllocType::Pool)
+				{
+					details::Data::Header* dataHeader = reinterpret_cast<details::Data::Header*>
+						(static_cast<uint8_t*>(data_) - (details::Data::HeaderSize + offset_ * details::Data::ChunkSize));
+
+					dataHeader->numOfAcquired.fetch_sub(1, std::memory_order_release);
+					
+					return;
+				}
+
 				if (allocType_ == AllocType::Heap)
 				{
 					std::free(data_);
 					return;
 				}
-
-				details::Data::Header* dataHeader = reinterpret_cast<details::Data::Header*>
-					(static_cast<uint8_t*>(data_) - (details::Data::HeaderSize + offset_ * details::Data::ChunkSize));
-
-				dataHeader->numOfAcquired.fetch_sub(1, std::memory_order_release);
 			}
 
 
@@ -449,10 +457,10 @@ namespace greezez
 			{}
 
 
-			// constructor for class friends
-			UniqueData(nullptr_t, void* data) noexcept :
-				state_(State::Utilized), allocType_(AllocType::Heap), offset_(0),
-				data_(data), next_(nullptr), padding(0)
+			// constructor for dummu UniqueData
+			UniqueData(nullptr_t) noexcept :
+				state_(State::Utilized), allocType_(AllocType::Stack), offset_(0),
+				data_(nullptr), next_(nullptr), padding(0)
 			{}
 
 
@@ -583,31 +591,17 @@ namespace greezez
 		public:
 
 			// Constructs a Queue
-			//
-			// success = false, if a memory allocation error occurs for the first element(dummy UniqueData) of the queue.
-			Queue(bool& succes) noexcept :
+			
+			Queue() noexcept :
 				head_(nullptr), dummy(nullptr), tail_(nullptr)
 			{
-				dummy = std::malloc(sizeof(UniqueData));
-
-				if (dummy != nullptr)
-				{
-					UniqueData* uniqueData = new(dummy) UniqueData(nullptr, dummy);
-
-					head_.store(uniqueData, std::memory_order_relaxed);
-					tail_.store(uniqueData, std::memory_order_release);
-
-					succes = true;
-					return;
-				}
-
-				succes = false;
+				head_.store(&dummy, std::memory_order_relaxed);
+				tail_.store(&dummy, std::memory_order_release);	
 			}
 
 
 			~Queue()
 			{
-				std::free(dummy);
 			}
 
 
@@ -685,7 +679,7 @@ namespace greezez
 		private:
 
 			std::atomic<UniqueData*> head_;
-			void* dummy;
+			UniqueData dummy;
 			char padding1[GREEZEZ_CACHE_LINE_SIZE - (sizeof(std::atomic<UniqueData*>) + sizeof(void*))]{};
 
 			std::atomic<UniqueData*> tail_;
