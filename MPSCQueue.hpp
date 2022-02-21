@@ -260,7 +260,7 @@ namespace greezez
 			}
 
 
-			size_t blockCount() noexcept
+			size_t chunkCount() noexcept
 			{
 				return header_->chunkCount;
 			}
@@ -326,7 +326,7 @@ namespace greezez
 
 			// Constructs a UniqueData
 			//
-			// Ñreates an empty UniqueData class.
+			// Creates an empty UniqueData class.
 			UniqueData() noexcept :
 				state_(State::Recorded), allocType_(AllocType::Pool), offset_(0),
 				data_(nullptr), next_(nullptr), padding(0)
@@ -586,7 +586,7 @@ namespace greezez
 			//
 			// success = false, if a memory allocation error occurs for the first element(dummy UniqueData) of the queue.
 			Queue(bool& succes) noexcept :
-				head_(nullptr), dummy(nullptr), tail_(nullptr), numOfInQueue_(0)
+				head_(nullptr), dummy(nullptr), tail_(nullptr)
 			{
 				dummy = std::malloc(sizeof(UniqueData));
 
@@ -607,13 +607,11 @@ namespace greezez
 
 			~Queue()
 			{
-				while (numOfInQueue() > 0)
-					pop()->release();
-
 				std::free(dummy);
 			}
 
 
+			
 			// Pops object from queue.
 			//
 			// return UniqueData pointer, if queue is not empty. 
@@ -623,51 +621,27 @@ namespace greezez
 			// 
 			// CAREFULL! only one thread is allowed to pop UniqueData to the Queue.
 			UniqueData* pop() noexcept
-			{
-				bool firstTry = true;
-
+			{				
 				while (true)
 				{
 					UniqueData* head = head_.load(std::memory_order_acquire);
-					UniqueData* tail = tail_.load(std::memory_order_acquire);
 
-					UniqueData* tailNext = tail->next_.load(std::memory_order_acquire);
-
-					if (head == tail)
+					if (head->state_ == UniqueData::State::Recorded)
 					{
-						if (head->state_ == UniqueData::State::Recorded)
-						{
-							head->state_ = UniqueData::State::Utilized;
+						head->state_ = UniqueData::State::Utilized;
+						return head;
+					}
 
-							return head;
-						}
+					UniqueData* nextHead = head->next_.load(std::memory_order_acquire);
 
-						//Try update tail, if next != nullptr.
-						if (tailNext != nullptr)
-							tail_.compare_exchange_strong(tail, tailNext);
-
+					if (nextHead == nullptr)
 						return nullptr;
-					}
 
-					UniqueData* headNext = head->next_.load(std::memory_order_acquire);
-					head_.store(headNext, std::memory_order_release);
+					head_.store(nextHead, std::memory_order_release);
 
-					numOfInQueue_.fetch_sub(1, std::memory_order_release);
+					continue;
 
-					if (head->state_ == UniqueData::State::Utilized)
-					{
-						if (!firstTry)
-							return nullptr;
-
-						firstTry = false;
-						continue;
-					}
-
-					head->state_ = UniqueData::State::Utilized;
-
-					return head;
 				}
-
 			}
 
 
@@ -695,8 +669,6 @@ namespace greezez
 						{
 							tail_.compare_exchange_strong(tail, uniqueData);
 
-							numOfInQueue_.fetch_add(1, std::memory_order_release);
-
 							return true;
 						}
 					}
@@ -710,13 +682,6 @@ namespace greezez
 			}
 
 
-			// returns the number of elements(UniqueData) in the queue.
-			size_t numOfInQueue() noexcept
-			{
-				return numOfInQueue_.load(std::memory_order_acquire);
-			}
-
-
 		private:
 
 			std::atomic<UniqueData*> head_;
@@ -725,8 +690,6 @@ namespace greezez
 
 			std::atomic<UniqueData*> tail_;
 			char padding2[GREEZEZ_CACHE_LINE_SIZE - sizeof(std::atomic<UniqueData*>)]{};
-
-			std::atomic_size_t numOfInQueue_;
 
 		};
 	}
