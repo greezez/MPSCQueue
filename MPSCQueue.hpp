@@ -371,11 +371,10 @@ namespace greezez
 			}
 
 
-			// Creates UniqueData, size <TypeSize> in heap.
-			template<size_t TypeSize>
-			static UniqueData* make() noexcept
+			// Creates UniqueData in heap.
+			static UniqueData* make(size_t size) noexcept
 			{
-				void* ptr = std::malloc(sizeof(UniqueData) + TypeSize);
+				void* ptr = std::malloc(sizeof(UniqueData) + size);
 
 				if (ptr != nullptr)
 				{
@@ -438,6 +437,8 @@ namespace greezez
 					std::free(data_);
 					return;
 				}
+
+				//if (allocType_ == AllocType::Stack){}
 			}
 
 
@@ -518,14 +519,13 @@ namespace greezez
 			}
 
 
-			// tries to allocate data of size <TypeSize>.
+			// tries to allocate data.
 			//
 			// return nulptr, if pool full.
-			template<size_t TypeSize>
-			UniqueData* tryAcquire() noexcept
+			UniqueData* tryAcquire(size_t size) noexcept
 			{
-				constexpr size_t blockCount = (sizeof(UniqueData) + TypeSize <= details::Data::ChunkSize)
-					? 1 : ((sizeof(UniqueData) + TypeSize) / details::Data::ChunkSize) + 1;
+				size_t blockCount = (sizeof(UniqueData) + size <= details::Data::ChunkSize)
+					? 1 : ((sizeof(UniqueData) + size) / details::Data::ChunkSize) + 1;
 
 				bool firstTry = true;
 
@@ -552,13 +552,12 @@ namespace greezez
 			}
 
 
-			// allocates data of size <TypeSize>, if the pool is full then allocate a new block of data.
+			// allocates data, if the pool is full then allocate a new block of data.
 			//
 			// retutn nullptr, if there is not enough memory to allocate block of data.
-			template<size_t TypeSize>
-			UniqueData* acquire() noexcept
+			UniqueData* acquire(size_t size) noexcept
 			{
-				UniqueData* uniqueData = tryAcquire<TypeSize>();
+				UniqueData* uniqueData = tryAcquire(size);
 
 				if (uniqueData != nullptr)
 					return uniqueData;
@@ -567,15 +566,15 @@ namespace greezez
 				if (!dataList_.emplaceAndUpdateCurrent(numOfChunkInDataBlock_, succes) or !succes)
 					return nullptr;
 
-				return tryAcquire<TypeSize>();
+				return tryAcquire(size);
 			}
+
 
 			// return the number of data blocks
 			size_t size() noexcept
 			{
 				return dataList_.size();
 			}
-
 
 		private:
 
@@ -591,8 +590,6 @@ namespace greezez
 
 		public:
 
-			// Constructs a Queue
-			
 			Queue() noexcept :
 				head_(nullptr), dummy(nullptr), tail_(nullptr)
 			{
@@ -606,14 +603,12 @@ namespace greezez
 			}
 
 
-			// Pops object from queue.
+			// Pops an UniqueData from the queue, can only use one thread.
 			//
 			// return UniqueData pointer, if queue is not empty. 
 			// return nullptr, if queue empty or first element empty.
 			//
 			// non-blocking and non-thread-safe.
-			// 
-			// CAREFULL! only one thread is allowed to pop UniqueData to the Queue.
 			UniqueData* pop() noexcept
 			{				
 				while (true)
@@ -639,14 +634,12 @@ namespace greezez
 			}
 
 
-			// Pushes object UniqueData to the queue.
+			// Queues a UniqueData object from any thread
 			//
 			// return false, if UniqueData = nullptr
 			// return true, if the push operation is successful.
 			//
 			// thread-safe and non-blocking.
-			//  
-			// Any thread can pushed UniqueData in queue.
 			bool push(UniqueData* uniqueData) noexcept
 			{
 				if (uniqueData == nullptr)
